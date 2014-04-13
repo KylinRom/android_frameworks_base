@@ -24,6 +24,7 @@ import org.xmlpull.v1.XmlPullParserException;
 import android.content.Context;
 import static android.content.res.HoloResources.isHoloRes;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageItemInfo;
 import android.graphics.Color;
 import android.graphics.Movie;
 import android.graphics.PorterDuff;
@@ -39,9 +40,9 @@ import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.Slog;
+import android.util.SparseArray;
 import android.util.TypedValue;
 import android.util.LongSparseArray;
-import android.view.DisplayAdjustments;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -84,6 +85,14 @@ public class Resources {
     private static final boolean TRACE_FOR_MISS_PRELOAD = false;
 
     private static final int ID_OTHER = 0x01000004;
+
+    // Package IDs for themes. Aapt will compile the res table with this id.
+    /** @hide */
+    public static final int THEME_FRAMEWORK_PKG_ID = 0x60;
+    /** @hide */
+    public static final int THEME_APP_PKG_ID = 0x61;
+    /** @hide */
+    public static final int THEME_ICON_PKG_ID = 0x62;
 
     private static final Object sSync = new Object();
     /*package*/ static Resources mSystem = null;
@@ -131,6 +140,8 @@ public class Resources {
     public String mPackageName;
     public static final String ChameleonKey = "Chameleon/%s";
     private boolean isSystem;
+
+    private SparseArray<PackageItemInfo> mIcons;
 
     static {
         sPreloadedDrawables = new LongSparseArray[2];
@@ -697,6 +708,12 @@ public class Resources {
      * @return Drawable An object that can be used to draw this resource.
      */
     public Drawable getDrawable(int id) throws NotFoundException {
+        //Check if an icon is themed
+        PackageItemInfo info = mIcons != null ? mIcons.get(id) : null;
+        if (info != null && info.themedIcon >> 24 == THEME_ICON_PKG_ID) {
+            id = info.themedIcon;
+        }
+
         TypedValue value;
         synchronized (mAccessLock) {
             value = mTmpValue;
@@ -736,6 +753,12 @@ public class Resources {
      * @return Drawable An object that can be used to draw this resource.
      */
     public Drawable getDrawableForDensity(int id, int density) throws NotFoundException {
+        //Check if an icon was themed
+        PackageItemInfo info = mIcons != null ? mIcons.get(id) : null;
+        if (info != null && info.themedIcon >> 24 == THEME_ICON_PKG_ID) {
+            id = info.themedIcon;
+        }
+
         TypedValue value;
         synchronized (mAccessLock) {
             value = mTmpValue;
@@ -1126,6 +1149,11 @@ public class Resources {
      */
     public void getValue(int id, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
+        //Check if an icon was themed
+        PackageItemInfo info = mIcons != null ? mIcons.get(id) : null;
+        if (info != null && info.themedIcon >> 24 == THEME_ICON_PKG_ID) {
+            id = info.themedIcon;
+        }
         boolean found = mAssets.getResourceValue(id, 0, outValue, resolveRefs);
         if (found) {
             return;
@@ -1149,6 +1177,11 @@ public class Resources {
      */
     public void getValueForDensity(int id, int density, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
+        //Check if an icon was themed
+        PackageItemInfo info = mIcons != null ? mIcons.get(id) : null;
+        if (info != null && info.themedIcon >> 24 == THEME_ICON_PKG_ID) {
+            id = info.themedIcon;
+        }
         boolean found = mAssets.getResourceValue(id, density, outValue, resolveRefs);
         if (found) {
             return;
@@ -2490,6 +2523,11 @@ public class Resources {
                     new int[len*AssetManager.STYLE_NUM_ENTRIES],
                     new int[1+len], len);
         }
+    }
+
+    /** @hide */
+    public void setIconResources(SparseArray<PackageItemInfo> icons) {
+        mIcons = icons;
     }
 
     private Resources() {
