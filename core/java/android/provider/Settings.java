@@ -3514,6 +3514,11 @@ public final class Settings {
         /**
          * @hide
          */
+        public static final String POWER_SAVER_CPU_PROFILE = "power_saver_cpu_profile";
+
+        /**
+         * @hide
+         */
         public static final String POWER_SAVER_CPU_GOVERNOR = "power_saver_cpu_governor";
 
         /**
