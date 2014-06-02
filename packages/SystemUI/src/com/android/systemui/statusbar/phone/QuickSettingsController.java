@@ -73,6 +73,7 @@ import com.android.systemui.quicksettings.BrightnessTile;
 import com.android.systemui.quicksettings.BugReportTile;
 import com.android.systemui.quicksettings.CameraTile;
 import com.android.systemui.quicksettings.DockBatteryTile;
+import com.android.systemui.quicksettings.EqualizerTile;
 import com.android.systemui.quicksettings.ExpandedDesktopTile;
 import com.android.systemui.quicksettings.GPSTile;
 import com.android.systemui.quicksettings.InputMethodTile;
@@ -346,6 +347,12 @@ public class QuickSettingsController {
             qs.setupQuickSettingsTile(inflater, mContainerView);
             mQuickSettingsTiles.add(qs);
         }
+        if (Settings.System.getIntForUser(resolver,
+                Settings.System.QS_DYNAMIC_EQUALIZER, 1, UserHandle.USER_CURRENT) == 1) {
+            QuickSettingsTile qs = new EqualizerTile(mContext, this);
+            qs.setupQuickSettingsTile(inflater, mContainerView);
+            mQuickSettingsTiles.add(qs);
+        }
     }
 
     private void loadDockBatteryTile(final ContentResolver resolver,
@@ -388,9 +395,16 @@ public class QuickSettingsController {
         loadTiles();
         setupBroadcastReceiver();
         setupContentObserver();
-        if (mRibbonMode) {
+        ContentResolver resolver = mContext.getContentResolver();
+        boolean smallIcons = Settings.System.getIntForUser(resolver,
+                Settings.System.QUICK_SETTINGS_SMALL_ICONS, 0, UserHandle.USER_CURRENT) == 1;
+        if (mRibbonMode || smallIcons) {
             for (QuickSettingsTile t : mQuickSettingsTiles) {
-                t.switchToRibbonMode();
+                if (mRibbonMode) {
+                    t.switchToRibbonMode();
+                } else {
+                    t.switchToSmallIcons();
+                }
             }
         }
     }

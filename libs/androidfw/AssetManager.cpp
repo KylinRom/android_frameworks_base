@@ -174,7 +174,8 @@ int32_t AssetManager::getGlobalCount()
 AssetManager::AssetManager(CacheMode cacheMode)
     : mLocale(NULL), mVendor(NULL),
       mResources(NULL), mConfig(new ResTable_config),
-      mCacheMode(cacheMode), mCacheValid(false)
+      mCacheMode(cacheMode), mCacheValid(false),
+      mBasePackageIndex(-1)
 {
     int count = android_atomic_inc(&gCount)+1;
     //ALOGI("Creating AssetManager %p #%d\n", this, count);
@@ -251,20 +252,63 @@ bool AssetManager::addAssetPath(const String8& path, void** cookie)
 
 /*
  * packagePath: Path to the APK that contains our icon assets
- * cookie: Set by this method. The caller can use this cookie to refer to the asset path that has been added.
- * resArscPath: Path to the overlay's cached resources table. If it is NULL it is assumed they are in the overlay APK"
- * resApkPath: Path to the overlay's processed and cached resources.
- * prefixPath: This is the base path internal to the icon APK. For example, if we have theme "com.redtheme.apk"
+ * cookie: Set by this method. The caller can use this cookie to refer to the added asset path.
+ * resArscPath: Path to the icon packs resource table.
+                Leave it NULL if the table is in the icon APK
+ * resApkPath: Path to the icon APK's processed and cached resources.
+ * prefixPath: This is the base path internal to the icon APK.
+               For example, if we have theme "com.redtheme.apk"
  *  assets/
  *    icons/
  *        res/
  *          drawable/
  *              foo.png
- * Our resources.arsc will reference foo.png's path as "res/drawable/foo.png"
- * so we need "assets/icons/" as a prefix
+ * Our restable will reference foo.png's path as "res/drawable/foo.png"
+ * so we need "assets/com.android.launcher/" as a prefix
+ * pkgIdOverride: The package id we want to give. This will overridet the id in the res table.
+ *                This is necessary for legacy icon packs because they are compiled with the
+ *                standard 7F package id.
 */
 bool AssetManager::addIconPath(const String8& packagePath, void** cookie, const String8& resArscPath,
-        const String8& resApkPath, const String8& prefixPath)
+        const String8& resApkPath, const String8& prefixPath, uint32_t pkgIdOverride)
+{
+    AutoMutex _l(mLock);
+
+    ALOGV("package path: %s, resArscPath %s, resApkPath %s, prefixPath %s",
+            packagePath.string(), resArscPath.string(),
+            resApkPath.string(), prefixPath.string());
+
+    // Skip if we have it already.
+    for (size_t i=0; i < mAssetPaths.size(); i++) {
+        if (mAssetPaths[i].path == packagePath && mAssetPaths[i].resfilePath == resArscPath) {
+            if (cookie) {
+                *cookie = (void*)(i+1);
+            }
+            return true;
+        }
+    }
+
+    asset_path oap;
+    oap.path = packagePath;
+    oap.type = ::getFileType(packagePath.string());
+    oap.resfilePath = resArscPath;
+    oap.resApkPath = resApkPath;
+    oap.prefixPath = prefixPath;
+    oap.pkgIdOverride = pkgIdOverride;
+    mAssetPaths.add(oap);
+    *cookie = (void*)mAssetPaths.size();
+
+   ResTable* rt = mResources;
+   if (rt != NULL) {
+       return updateResTableFromAssetPath(rt, oap, *cookie);
+   }
+
+   return true;
+}
+
+
+bool AssetManager::addCommonOverlayPath(const String8& packagePath, void** cookie,
+        const String8& resArscPath, const String8& resApkPath, const String8& prefixPath)
 {
     AutoMutex _l(mLock);
 
@@ -291,12 +335,12 @@ bool AssetManager::addIconPath(const String8& packagePath, void** cookie, const 
     mAssetPaths.add(oap);
     *cookie = (void*)mAssetPaths.size();
 
-   ResTable* rt = mResources;
-   if (rt != NULL) {
-       return updateResTableFromAssetPath(rt, oap, *cookie);
-   }
+    ResTable* rt = mResources;
+    if (rt != NULL) {
+        return updateResTableFromAssetPath(rt, oap, *cookie);
+    }
 
-   return true;
+    return true;
 }
 
 
@@ -420,6 +464,20 @@ String8 AssetManager::getPkgName(const char *apkPath) {
         manifestAsset->close();
         return pkgName;
     }
+
+/**
+ * Returns the base package name as defined in the AndroidManifest.xml
+ */
+String8 AssetManager::getBasePackageName(int index)
+{
+    if (index >= mAssetPaths.size()) return String8::empty();
+
+    if (mBasePackageName.isEmpty() || mBasePackageIndex != index) {
+        mBasePackageName = getPkgName(mAssetPaths[index].path.string());
+        mBasePackageIndex = index;
+    }
+    return mBasePackageName;
+}
 
 String8 AssetManager::getOverlayResPath(const char* targetApkPath, const char* overlayApkPath)
 {
@@ -795,7 +853,7 @@ const ResTable* AssetManager::getResTable(bool required) const
                     // can quickly copy it out for others.
                     ALOGV("Creating shared resources for %s", ap.path.string());
                     sharedRes = new ResTable();
-                    sharedRes->add(ass, (void*)(i+1), false, idmap);
+                    sharedRes->add(ass, (void*)(i+1), false, idmap, ap.pkgIdOverride);
 #ifdef HAVE_ANDROID_OS
                     const char* data = getenv("ANDROID_DATA");
                     LOG_ALWAYS_FATAL_IF(data == NULL, "ANDROID_DATA not set");
@@ -827,7 +885,7 @@ const ResTable* AssetManager::getResTable(bool required) const
                 rt->add(sharedRes);
             } else {
                 ALOGV("Parsing resources for %s", ap.path.string());
-                rt->add(ass, (void*)(i+1), !shared, idmap);
+                rt->add(ass, (void*)(i+1), !shared, idmap, ap.pkgIdOverride);
             }
 
             if (!shared) {
@@ -919,7 +977,7 @@ void AssetManager::addSystemOverlays(const char* pathOverlaysList,
         if (oass != NULL) {
             Asset* oidmap = openIdmapLocked(oap);
             offset++;
-            sharedRes->add(oass, (void*)(offset + 1), false, oidmap);
+            sharedRes->add(oass, (void*)(offset + 1), false, oidmap, oap.pkgIdOverride);
             const_cast<AssetManager*>(this)->mAssetPaths.add(oap);
             const_cast<AssetManager*>(this)->mZipSet.addOverlay(targetPackagePath, oap);
         }
@@ -936,6 +994,7 @@ bool AssetManager::updateResTableFromAssetPath(ResTable *rt, const asset_path& a
 {
     Asset* ass = NULL;
     size_t cookiePos = (size_t)cookie;
+    bool shared = true;
 
     assert(dirName != NULL);
     assert(ap != NULL);
@@ -946,6 +1005,7 @@ bool AssetManager::updateResTableFromAssetPath(ResTable *rt, const asset_path& a
         // Res file is outside APK
         ass = const_cast<AssetManager*>(this)->
               openAssetFromFileLocked(ap.resfilePath, Asset::ACCESS_BUFFER);
+        shared = false;
     } else if (ap.type != kFileTypeDirectory) {
         ass = const_cast<AssetManager*>(this)->
             mZipSet.getZipResourceTableAsset(ap.path);
@@ -959,18 +1019,31 @@ bool AssetManager::updateResTableFromAssetPath(ResTable *rt, const asset_path& a
                     mZipSet.setZipResourceTableAsset(ap.path, ass);
             }
         }
-     }
+    }
 
-     //Add the resources to the collection of ResTables
-     status_t error = NO_ERROR;
-     if (ass != NULL) {
-         Asset* oidmap = openIdmapLocked(ap);
-         error = rt->add(ass, cookie, false, oidmap);
-     } else {
-       ALOGW("Unable to load asset %s, ResTable not updated", ap.path.string());
-     }
+    //Add the resources to the collection of ResTables
+    status_t error = NO_ERROR;
+    if (ass != NULL) {
+        Asset* oidmap = openIdmapLocked(ap);
+        error = rt->add(ass, cookie, !shared, oidmap, ap.pkgIdOverride);
+        if (!shared) {
+            delete ass;
+        }
+        if (oidmap != NULL) {
+            delete oidmap;
+        }
+    } else {
+        if (!ap.resfilePath.isEmpty()) {
+            // when attempting to load common resources that may not exist we would see
+            // numerous "Unable to load asset ..." messages in the log. We really don't need
+             // to be spamming the user's log with this since it is not a critical problem
+            ALOGV("Unable to load asset %s, ResTable not updated", ap.resfilePath.string());
+        } else {
+            ALOGW("Unable to load asset %s, ResTable not updated", ap.path.string());
+        }
+    }
 
-     return (error == NO_ERROR);
+    return (error == NO_ERROR);
 }
 
 bool AssetManager::removeOverlayPath(const String8& packageName, void* cookie)

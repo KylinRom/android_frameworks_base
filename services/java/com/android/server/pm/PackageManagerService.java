@@ -32,6 +32,8 @@ import static libcore.io.OsConstants.S_IXGRP;
 import static libcore.io.OsConstants.S_IROTH;
 import static libcore.io.OsConstants.S_IXOTH;
 
+import android.content.res.AssetManager;
+import android.util.Pair;
 import com.android.internal.app.IMediaContainerService;
 import com.android.internal.app.ResolverActivity;
 import com.android.internal.content.NativeLibraryHelper;
@@ -98,8 +100,6 @@ import android.content.pm.ThemeUtils;
 import android.content.pm.VerificationParams;
 import android.content.pm.VerifierDeviceIdentity;
 import android.content.pm.VerifierInfo;
-import android.content.res.Configuration;
-import android.content.res.CustomTheme;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Binder;
@@ -141,7 +141,6 @@ import android.view.Display;
 import android.view.WindowManager;
 
 import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileDescriptor;
@@ -156,6 +155,8 @@ import java.io.PrintWriter;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
 import java.security.cert.CertificateException;
@@ -175,9 +176,6 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipException;
-import java.util.zip.ZipFile;
 
 import libcore.io.ErrnoException;
 import libcore.io.IoUtils;
@@ -291,8 +289,21 @@ public class PackageManagerService extends IPackageManager.Stub {
     //Where the icon pack can be found in a themed apk
     private static final String APK_PATH_TO_ICONS = "assets/icons/";
 
+    private static final String COMMON_OVERLAY = ThemeUtils.COMMON_RES_TARGET;
+    private static final String APK_PATH_TO_COMMON_OVERLAY = APK_PATH_TO_OVERLAY + COMMON_OVERLAY;
+
     // Where package redirections are stored for legacy themes
     private static final String REDIRECTIONS_PATH = "/data/app/redirections";
+
+    private static final long PACKAGE_HASH_EXPIRATION = 3*60*1000; // 3 minutes
+    private static final long COMMON_RESOURCE_EXPIRATION = 3*60*1000; // 3 minutes
+
+    /**
+     * IDMAP hash version code used to alter the resulting hash and force recreating
+     * of the idmap.  This value should be changed whenever there is a need to force
+     * an update to all idmaps.
+     */
+    private static final byte IDMAP_HASH_VERSION = 2;
 
     final HandlerThread mHandlerThread = new HandlerThread("PackageManager",
             Process.THREAD_PRIORITY_BACKGROUND);
@@ -486,6 +497,11 @@ public class PackageManagerService extends IPackageManager.Stub {
     private AppOpsManager mAppOps;
 
     private IconPackHelper mIconPackHelper;
+
+    private Map<String, Pair<Integer, Long>> mPackageHashes =
+            new HashMap<String, Pair<Integer, Long>>();
+
+    private Map<String, Long> mAvailableCommonResources = new HashMap<String, Long>();
 
     // Set of pending broadcasts for aggregating enable/disable of components.
     static class PendingPackageBroadcasts {
@@ -1255,7 +1271,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                     Slog.w(TAG, "No BOOTCLASSPATH found!");
                 }
 
-                final boolean[] didDexOpt = {false};
+                boolean didDexOpt = false;
 
                 /**
                  * Ensure all external libraries have had dexopt run on them.
@@ -1270,12 +1286,13 @@ public class PackageManagerService extends IPackageManager.Stub {
                         }
                         try {
                             if (dalvik.system.DexFile.isDexOptNeeded(lib)) {
+                                alreadyDexOpted.add(lib);
+                                didDexOpt = true;
+
                                 executorService.submit(new Runnable() {
                                     @Override
                                     public void run() {
-                                        alreadyDexOpted.add(lib);
                                         mInstaller.dexopt(lib, Process.SYSTEM_UID, true);
-                                        didDexOpt[0] = true;
                                     }
                                 });
                             }
@@ -1326,11 +1343,12 @@ public class PackageManagerService extends IPackageManager.Stub {
                         }
                         try {
                             if (dalvik.system.DexFile.isDexOptNeeded(path)) {
+                                didDexOpt = true;
+
                                 executorService.submit(new Runnable() {
                                     @Override
                                     public void run() {
                                         mInstaller.dexopt(path, Process.SYSTEM_UID, true);
-                                        didDexOpt[0] = true;
                                     }
                                 });
                             }
@@ -1348,7 +1366,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                     }
                 }
 
-                if (didDexOpt[0]) {
+                if (didDexOpt) {
                     File dalvikCacheDir = new File(dataDir, "dalvik-cache");
 
                     // If we had to do a dexopt of one of the previous
@@ -3632,14 +3650,23 @@ public class PackageManagerService extends IPackageManager.Stub {
 
     private boolean createIdmapsForPackageLI(PackageParser.Package pkg) {
         HashMap<String, PackageParser.Package> overlays = mOverlays.get(pkg.packageName);
+        final String pkgName = pkg.packageName;
         if (overlays == null) {
-            Log.w(TAG, "Unable to create idmap for " + pkg.packageName + ": no overlay packages");
+            Log.w(TAG, "Unable to create idmap for " + pkgName + ": no overlay packages");
             return false;
         }
         for (PackageParser.Package opkg : overlays.values()) {
             for(String overlayTarget : opkg.mOverlayTargets) {
-                if (overlayTarget.equals(pkg.packageName)) {
-                    if (!createIdmapForPackagePairLI(pkg, opkg, "")) {
+                if (overlayTarget.equals(pkgName)) {
+                    try {
+                        if (opkg.mIsLegacyThemeApk) {
+                            generateIdmapForLegacyTheme(pkgName, opkg);
+                        } else {
+                            generateIdmap(pkgName, opkg);
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Unable to create idmap for " + pkgName
+                                + ": no overlay packages", e);
                         return false;
                     }
                 }
@@ -3663,7 +3690,8 @@ public class PackageManagerService extends IPackageManager.Stub {
             return false;
         }
         final int sharedGid = UserHandle.getSharedAppGid(pkg.applicationInfo.uid);
-        if (mInstaller.idmap(pkg.mScanPath, opkg.mScanPath, redirectionsPath, sharedGid) != 0) {
+        if (mInstaller.idmap(pkg.mScanPath, opkg.mScanPath, redirectionsPath, sharedGid,
+                getPackageHashCode(pkg), getPackageHashCode(opkg)) != 0) {
             Slog.e(TAG, "Failed to generate idmap for " + pkg.mScanPath + " and " + opkg.mScanPath);
             return false;
         }
@@ -5031,6 +5059,13 @@ public class PackageManagerService extends IPackageManager.Stub {
             }
             // Add the new setting to mSettings
             mSettings.insertPackageSettingLPw(pkgSetting, pkg);
+
+            // Themes: handle case where app was installed after icon mapping applied
+            if (mIconPackHelper != null) {
+                int id = mIconPackHelper.getResourceIdForApp(pkg.packageName);
+                pkg.applicationInfo.themedIcon = id;
+            }
+
             // Add the new setting to mPackages
             mPackages.put(pkg.applicationInfo.packageName, pkg);
             // Make sure we don't accidentally delete its data.
@@ -5184,6 +5219,13 @@ public class PackageManagerService extends IPackageManager.Stub {
                 PackageParser.Activity a = pkg.activities.get(i);
                 a.info.processName = fixProcessName(pkg.applicationInfo.processName,
                         a.info.processName, pkg.applicationInfo.uid);
+
+                // Themes: handle case where app was installed after icon mapping applied
+                if (mIconPackHelper != null) {
+                    a.info.themedIcon = mIconPackHelper
+                            .getResourceIdForActivityIcon(a.info);
+                }
+
                 mActivities.addActivity(a, "activity");
                 if ((parseFlags&PackageParser.PARSE_CHATTY) != 0) {
                     if (r == null) {
@@ -5341,59 +5383,106 @@ public class PackageManagerService extends IPackageManager.Stub {
 
             pkgSetting.setTimeStamp(scanFileTime);
 
-            // Generate Idmaps if pkg is not a theme
+            // Generate resources & idmaps if pkg is NOT a theme
+            // We must compile resources here because during the initial boot process we may get
+            // here before a default theme has had a chance to compile its resources
             if (pkg.mOverlayTargets.isEmpty() && mOverlays.containsKey(pkg.packageName)) {
-                if (!createIdmapsForPackageLI(pkg)) {
-                    mLastScanError = PackageManager.INSTALL_FAILED_UPDATE_INCOMPATIBLE;
-                    return null;
+                HashMap<String, PackageParser.Package> themes = mOverlays.get(pkg.packageName);
+                for(PackageParser.Package themePkg : themes.values()) {
+                    try {
+                        compileResourcesAndIdmapIfNeeded(pkg, themePkg);
+                    } catch(Exception e) {
+                        // Do not stop a pkg installation just because of one bad theme
+                        // Also we don't break here because we should try to compile other themes
+                        Log.e(TAG, "Unable to compile " + themePkg.packageName
+                                + " for target " + pkg.packageName, e);
+                    }
                 }
             }
 
             // Generate Idmaps and res tables if pkg is a theme
             for(String target : pkg.mOverlayTargets) {
-                if (!shouldCreateIdmap(mPackages.get(target), pkg)) {
-                    continue;
-                }
-                if (pkg.mIsLegacyThemeApk) {
-                    if (target != null) {
-                        try {
-                            insertIntoOverlayMap(target, pkg);
-                            generateIdmapForLegacyTheme(target, pkg);
-                        } catch (Exception e) {
-                            mLastScanError = PackageManager.INSTALL_FAILED_INTERNAL_ERROR;
-                            uninstallThemeForAllApps(pkg);
-                            return null;
-                        }
-                    }
-                    continue;
-                }
+                Exception failedException = null;
+
+                insertIntoOverlayMap(target, pkg);
                 try {
-                    ThemeUtils.createCacheDirIfNotExists();
-                    ThemeUtils.createResourcesDirIfNotExists(target, pkg.applicationInfo.publicSourceDir);
-                    compileResources(target, pkg);
-                    insertIntoOverlayMap(target, pkg);
-                    generateIdmap(target, pkg);
+                    compileResourcesAndIdmapIfNeeded(mPackages.get(target), pkg);
+                } catch(IdmapException e) {
+                    failedException = e;
+                    mLastScanError = PackageManager.INSTALL_FAILED_THEME_IDMAP_ERROR;
+                } catch(AaptException e) {
+                    failedException = e;
+                    mLastScanError = PackageManager.INSTALL_FAILED_THEME_AAPT_ERROR;
                 } catch(Exception e) {
-                    mLastScanError = PackageManager.INSTALL_FAILED_INTERNAL_ERROR;
+                    failedException = e;
+                    mLastScanError = PackageManager.INSTALL_FAILED_THEME_UNKNOWN_ERROR;
+                }
+
+                if (failedException != null) {
+                    // Theme install failed, cleanup!
+                    Log.w(TAG, "Unable to process theme " + pkgName, failedException);
                     uninstallThemeForAllApps(pkg);
+                    deletePackageLI(pkg.packageName, null, true, null, null, 0, null, false);
                     return null;
                 }
             }
 
             //Icon Packs need aapt too
+            //TODO: No need to run aapt on icons for every startup...
             if (pkg.hasIconPack) {
                 try {
                     ThemeUtils.createCacheDirIfNotExists();
                     ThemeUtils.createIconDirIfNotExists(pkg.packageName);
                     compileIconPack(pkg);
                 } catch(Exception e) {
-                    mLastScanError = PackageManager.INSTALL_FAILED_INTERNAL_ERROR;
+                    mLastScanError = PackageManager.INSTALL_FAILED_THEME_AAPT_ERROR;
                     uninstallThemeForAllApps(pkg);
+                    deletePackageLI(pkg.packageName, null, true, null, null, 0, null, false);
                 }
             }
         }
 
         return pkg;
+    }
+
+    private void compileResourcesAndIdmapIfNeeded(PackageParser.Package targetPkg,
+                                               PackageParser.Package themePkg)
+            throws IdmapException, AaptException, IOException, Exception
+    {
+        if (!shouldCreateIdmap(targetPkg, themePkg)) {
+            return;
+        }
+
+        if (themePkg.mIsLegacyThemeApk) {
+            generateIdmapForLegacyTheme(targetPkg.packageName, themePkg);
+            return;
+        }
+
+        compileResourcesIfNeeded(targetPkg.packageName, themePkg);
+        generateIdmap(targetPkg.packageName, themePkg);
+    }
+
+    private void compileResourcesIfNeeded(String target, PackageParser.Package pkg)
+        throws AaptException, IOException, Exception
+    {
+        // Legacy themes are already compiled by aapt
+        if (pkg.mIsLegacyThemeApk) {
+            return;
+        }
+
+        ThemeUtils.createCacheDirIfNotExists();
+
+        if (hasCommonResources(pkg)
+                && shouldCompileCommonResources(pkg)) {
+            ThemeUtils.createResourcesDirIfNotExists(COMMON_OVERLAY,
+                    pkg.applicationInfo.publicSourceDir);
+            compileResources(COMMON_OVERLAY, pkg);
+            mAvailableCommonResources.put(pkg.packageName, System.currentTimeMillis());
+        }
+
+        ThemeUtils.createResourcesDirIfNotExists(target,
+                pkg.applicationInfo.publicSourceDir);
+        compileResources(target, pkg);
     }
 
     private void compileResources(String target, PackageParser.Package pkg) throws Exception {
@@ -5402,7 +5491,8 @@ public class PackageManagerService extends IPackageManager.Stub {
         //when creating the resource table. We care about the resource table's name because
         //it is used when removing the table by cookie.
         try {
-            createTempManifest(pkg.packageName);
+            createTempManifest(COMMON_OVERLAY.equals(target)
+                    ? ThemeUtils.getCommonPackageName(pkg.packageName) : pkg.packageName);
             compileResourcesWithAapt(target, pkg);
         } finally {
             cleanupTempManifest();
@@ -5419,12 +5509,15 @@ public class PackageManagerService extends IPackageManager.Stub {
         }
     }
 
-    private void generateIdmapForLegacyTheme(String target, PackageParser.Package opkg) throws IOException {
+    private void generateIdmapForLegacyTheme(String target, PackageParser.Package opkg)
+            throws IOException, IdmapException {
         try {
             createTempPackageRedirections(target, opkg.mPackageRedirections.get(target));
             PackageParser.Package targetPkg = mPackages.get(target);
-            if (targetPkg != null && !createIdmapForPackagePairLI(targetPkg, opkg, REDIRECTIONS_PATH)) {
-                mLastScanError = PackageManager.INSTALL_FAILED_UPDATE_INCOMPATIBLE;
+            if (targetPkg != null &&
+                    !createIdmapForPackagePairLI(targetPkg, opkg, REDIRECTIONS_PATH)) {
+                throw new IdmapException("legacy idmap failed for targetPkg: " + target
+                        + " and opkg: " + opkg);
             }
         } finally {
             cleanupTempPackageRedirections();
@@ -5440,21 +5533,56 @@ public class PackageManagerService extends IPackageManager.Stub {
         map.put(opkg.packageName, opkg);
     }
 
-    private void generateIdmap(String target, PackageParser.Package opkg) {
+    private void generateIdmap(String target, PackageParser.Package opkg) throws IdmapException {
         PackageParser.Package targetPkg = mPackages.get(target);
         if (targetPkg != null && !createIdmapForPackagePairLI(targetPkg, opkg, "")) {
-            mLastScanError = PackageManager.INSTALL_FAILED_UPDATE_INCOMPATIBLE;
+            throw new IdmapException("idmap failed for targetPkg: " + targetPkg
+                    + " and opkg: " + opkg);
         }
     }
 
-    private void compileResourcesWithAapt(String target, PackageParser.Package pkg) throws Exception {
+    public class AaptException extends Exception {
+        public AaptException(String message) {
+            super(message);
+        }
+    }
+
+    public class IdmapException extends Exception {
+        public IdmapException(String message) {
+            super(message);
+        }
+    }
+
+    private boolean hasCommonResources(PackageParser.Package pkg) throws Exception {
+        boolean ret = false;
+        // check if assets/overlays/common exists in this theme
+        AssetManager assets = new AssetManager();
+        assets.addAssetPath(pkg.mScanPath);
+        String[] common = assets.list("overlays/common");
+        if (common != null && common.length > 0) ret = true;
+
+        return ret;
+    }
+
+    private void compileResourcesWithAapt(String target, PackageParser.Package pkg)
+            throws Exception {
         String internalPath = APK_PATH_TO_OVERLAY + target;
         String resPath = ThemeUtils.getResDir(target, pkg);
         final int sharedGid = UserHandle.getSharedAppGid(pkg.applicationInfo.uid);
-        int pkgId = target.equals("android") ? Resources.THEME_FRAMEWORK_PKG_ID : Resources.THEME_APP_PKG_ID;
+        int pkgId;
+        if ("android".equals(target)) {
+            pkgId = Resources.THEME_FRAMEWORK_PKG_ID;
+        } else if (COMMON_OVERLAY.equals(target)) {
+            pkgId = Resources.THEME_COMMON_PKG_ID;
+        } else {
+            pkgId = Resources.THEME_APP_PKG_ID;
+        }
 
-        if (mInstaller.aapt(pkg.mScanPath, internalPath, resPath, sharedGid, pkgId) != 0) {
-            throw new Exception("Failed to run aapt");
+        boolean hasCommonResources = (hasCommonResources(pkg) && !COMMON_OVERLAY.equals(target));
+        if (mInstaller.aapt(pkg.mScanPath, internalPath, resPath, sharedGid, pkgId,
+                hasCommonResources ? ThemeUtils.getResDir(COMMON_OVERLAY, pkg)
+                        + File.separator + "resources.apk" : "") != 0) {
+            throw new AaptException("Failed to run aapt");
         }
     }
 
@@ -5462,8 +5590,9 @@ public class PackageManagerService extends IPackageManager.Stub {
         String resPath = ThemeUtils.getIconPackDir(pkg.packageName);
         final int sharedGid = UserHandle.getSharedAppGid(pkg.applicationInfo.uid);
 
-        if (mInstaller.aapt(pkg.mScanPath, APK_PATH_TO_ICONS, resPath, sharedGid, Resources.THEME_ICON_PKG_ID) != 0) {
-            throw new Exception("Failed to run aapt");
+        if (mInstaller.aapt(pkg.mScanPath, APK_PATH_TO_ICONS, resPath, sharedGid,
+                Resources.THEME_ICON_PKG_ID, "") != 0) {
+            throw new AaptException("Failed to run aapt");
         }
     }
 
@@ -5571,8 +5700,8 @@ public class PackageManagerService extends IPackageManager.Stub {
     }
 
     /**
-     * Compares the last modified time of the target and overlay to those stored
-     * in the idmap and returns true if either time differs
+     * Compares the 32 bit hash of the target and overlay to those stored
+     * in the idmap and returns true if either hash differs
      * @param targetPkg
      * @param overlayPkg
      * @return
@@ -5582,23 +5711,38 @@ public class PackageManagerService extends IPackageManager.Stub {
                                       PackageParser.Package overlayPkg) {
         if (targetPkg == null || overlayPkg == null) return false;
 
+        int targetHash = getPackageHashCode(targetPkg);
+        int overlayHash = getPackageHashCode(overlayPkg);
+
         File idmap = new File(getIdmapPath(targetPkg, overlayPkg));
         if (!idmap.exists())
             return true;
 
-        int[] mtimes;
+        int[] hashes;
         try {
-            mtimes = getIdmapTimes(idmap);
+            hashes = getIdmapHashes(idmap);
         } catch (IOException e) {
             return true;
         }
-        File f = new File(targetPkg.mPath);
-        if ((int)(f.lastModified() / 1000) != mtimes[0]) {
+
+        if (targetHash == 0 || overlayHash == 0 ||
+                targetHash != hashes[0] || overlayHash != hashes[1]) {
+            // if the overlay changed we'll want to recreate the common resources if it has any
+            if (overlayHash != hashes[1]
+                    && mAvailableCommonResources.containsKey(overlayPkg.packageName)) {
+                mAvailableCommonResources.remove(overlayPkg.packageName);
+            }
             return true;
         }
+        return false;
+    }
 
-        f = new File(overlayPkg.mPath);
-        if ((int)(f.lastModified() / 1000) != mtimes[1]) {
+    private boolean shouldCompileCommonResources(PackageParser.Package pkg) {
+        if (!mAvailableCommonResources.containsKey(pkg.packageName)) return true;
+
+        long lastUpdated = mAvailableCommonResources.get(pkg.packageName);
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastUpdated > COMMON_RESOURCE_EXPIRATION) {
             return true;
         }
         return false;
@@ -5610,7 +5754,7 @@ public class PackageManagerService extends IPackageManager.Stub {
      * @return
      * @throws IOException
      */
-    private int[] getIdmapTimes(File idmap) throws IOException {
+    private int[] getIdmapHashes(File idmap) throws IOException {
         int[] times = new int[2];
         ByteBuffer bb = ByteBuffer.allocate(20);
         bb.order(ByteOrder.LITTLE_ENDIAN);
@@ -5622,6 +5766,40 @@ public class PackageManagerService extends IPackageManager.Stub {
         times[1] = ib.get(4);
 
         return times;
+    }
+
+    /**
+     * Get a 32 bit hashcode for the given package.
+     * @param pkg
+     * @return
+     */
+    private int getPackageHashCode(PackageParser.Package pkg) {
+        Pair<Integer, Long> p = mPackageHashes.get(pkg.packageName);
+        if (p != null && (System.currentTimeMillis() - p.second < PACKAGE_HASH_EXPIRATION)) {
+            return p.first;
+        }
+        if (p != null) {
+            mPackageHashes.remove(p);
+        }
+
+        byte[] md5 = getFileMd5Sum(pkg.mPath);
+        if (md5 == null) return 0;
+
+        p = new Pair(Arrays.hashCode(ByteBuffer.wrap(md5).put(IDMAP_HASH_VERSION).array()),
+                System.currentTimeMillis());
+        mPackageHashes.put(pkg.packageName, p);
+        return p.first;
+    }
+
+    private byte[] getFileMd5Sum(String path) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            DigestInputStream dis = new DigestInputStream(new FileInputStream(path), md);
+            dis.close();
+            return md.digest();
+        } catch (Exception e) {
+        }
+        return null;
     }
 
     private void setUpCustomResolverActivity(PackageParser.Package pkg) {
@@ -9845,6 +10023,8 @@ public class PackageManagerService extends IPackageManager.Stub {
 
         synchronized (mInstallLock) {
             if (DEBUG_REMOVE) Slog.d(TAG, "deletePackageX: pkg=" + packageName + " user=" + userId);
+            sendPackageBroadcast(Intent.ACTION_PACKAGE_BEING_REMOVED, packageName, null,
+                    null, null, null, null);
             res = deletePackageLI(packageName,
                     (flags & PackageManager.DELETE_ALL_USERS) != 0
                             ? UserHandle.ALL : new UserHandle(userId),
@@ -12174,7 +12354,6 @@ public class PackageManagerService extends IPackageManager.Stub {
 
     @Override
     public void updateIconMapping(String pkgName) {
-        SystemProperties.set("sys.refresh_theme", "1");
         mContext.enforceCallingOrSelfPermission(
                 android.Manifest.permission.CHANGE_CONFIGURATION,
                 "could not update icon mapping because caller does not have change config permission");
@@ -12203,6 +12382,7 @@ public class PackageManagerService extends IPackageManager.Stub {
     }
 
     private void clearIconMapping() {
+        mIconPackHelper = null;
         for (Activity activity : mActivities.mActivities.values()) {
             activity.info.themedIcon = 0;
         }

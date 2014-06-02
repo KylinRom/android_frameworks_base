@@ -21,6 +21,7 @@ import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.Slog;
 import android.util.SparseArray;
 
@@ -342,23 +343,40 @@ public final class Installer {
         return execute(builder.toString());
     }
 
-    public int idmap(String targetApkPath, String overlayApkPath, String redirectionsPath, int uid) {
-        StringBuilder builder = new StringBuilder("idmap");
+    public int idmap(String targetApkPath, String overlayApkPath, String redirectionsPath, int uid,
+                     int targetHash, int overlayHash) {
+        StringBuilder builder = new StringBuilder();
+        if (TextUtils.isEmpty(redirectionsPath)) {
+            builder.append("idmap");
+        } else {
+            builder.append("idmap_with_redirs");
+        }
         builder.append(' ');
         builder.append(targetApkPath);
         builder.append(' ');
         builder.append(overlayApkPath);
         builder.append(' ');
         builder.append(uid);
-        if (redirectionsPath != null) {
+        builder.append(' ');
+        builder.append(targetHash);
+        builder.append(' ');
+        builder.append(overlayHash);
+        if (!TextUtils.isEmpty(redirectionsPath)) {
             builder.append(' ');
             builder.append(redirectionsPath);
         }
         return execute(builder.toString());
     }
 
-    public int aapt(String themeApkPath, String internalPath, String resTablePath, int uid, int pkgId) {
-        StringBuilder builder = new StringBuilder("aapt");
+    public int aapt(String themeApkPath, String internalPath, String resTablePath, int uid,
+                    int pkgId, String commonResourcesPath) {
+
+        StringBuilder builder = new StringBuilder();
+        if (TextUtils.isEmpty(commonResourcesPath)) {
+            builder.append("aapt");
+        } else {
+            builder.append("aapt_with_common");
+        }
         builder.append(' ');
         builder.append(themeApkPath);
         builder.append(' ');
@@ -369,6 +387,12 @@ public final class Installer {
         builder.append(uid);
         builder.append(' ');
         builder.append(pkgId);
+
+        if (!TextUtils.isEmpty(commonResourcesPath)) {
+            builder.append(' ');
+            builder.append(commonResourcesPath);
+        }
+
         return execute(builder.toString());
     }
 
