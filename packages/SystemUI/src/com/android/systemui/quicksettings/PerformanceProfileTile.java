@@ -23,6 +23,7 @@ import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.net.Uri;
 import android.os.PowerManager;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.view.View;
 
@@ -127,4 +128,3 @@ public class PerformanceProfileTile extends QuickSettingsTile {
     }
 
 }
-

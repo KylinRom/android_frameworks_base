@@ -20,6 +20,7 @@ import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -40,8 +41,8 @@ public class BootReceiver extends BroadcastReceiver {
                 context.startService(loadavg);
             }
 
-            // start the power saver service if activated
-            if (Settings.System.getInt(res, Settings.System.POWER_SAVER_ENABLED, 1) != 0) {
+            // Start the powersaver service if enabled
+            if (Settings.System.getIntForUser(res, Settings.System.POWER_SAVER_ENABLED, 1, UserHandle.USER_CURRENT_OR_SELF) != 0) {
                 Intent powersaver = new Intent(context, com.android.systemui.powersaver.PowerSaverService.class);
                 context.startService(powersaver);
             }
