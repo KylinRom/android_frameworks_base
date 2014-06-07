@@ -61,9 +61,8 @@ public final class PhoneLocation {
 
     public static String getCityFromPhone(String num) {
 	num=(num.replace("-", "")).replace(" ", "");
-        String PhoneLocationStr=getPosFromPhone(num, 1);  		
+        String PhoneLocationStr = getPosFromPhone(num, 1);  		
         return (null == PhoneLocationStr ? "" : PhoneLocationStr);
 
     }
 }
-
