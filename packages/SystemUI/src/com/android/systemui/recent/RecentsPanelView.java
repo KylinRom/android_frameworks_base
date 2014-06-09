@@ -25,9 +25,9 @@ import android.app.ActivityOptions;
 import android.app.TaskStackBuilder;
 import android.app.admin.DevicePolicyManager;
 import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
@@ -89,13 +89,12 @@ import com.android.systemui.statusbar.phone.PhoneStatusBar;
 import com.android.internal.util.MemInfoReader;
 
 import java.util.ArrayList;
-
-import java.io.BufferedReader;
-import java.io.FileReader;
-import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 
 public class RecentsPanelView extends FrameLayout implements OnItemClickListener, RecentsCallback,
         StatusBarPanel, Animator.AnimatorListener {
@@ -760,6 +759,8 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
      */
     private void clearAllNonLocked() {
         int count = 0;
+        int cleaned = 0;
+        boolean scrolled = false;
         if (mRecentsContainer instanceof RecentsVerticalScrollView) {
             count = ((RecentsVerticalScrollView) mRecentsContainer).getLinearLayoutChildCount();
             for (int i = 0; i < count; i++) {
@@ -767,6 +768,15 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
                         .getLinearLayoutChildAt(i);
                  ViewHolder holder = (ViewHolder) child.getTag();
                 if (holder == null || !holder.taskDescription.isLocked()) {
+                    if (!scrolled) {
+                        scrolled = true;
+                        ((RecentsVerticalScrollView) mRecentsContainer).post(new Runnable(){
+                            @Override
+                            public void run() {
+                                ((RecentsVerticalScrollView) mRecentsContainer).smoothScrollTo(0, (int)child.getY());
+                            }});
+                    }
+                    cleaned ++;
                     ((RecentsVerticalScrollView) mRecentsContainer).postDelayed(new Runnable() {
                         @Override
                         public void run() {
@@ -775,7 +785,12 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
                     }, i * 150);
                 }
             }
-            count = ((RecentsVerticalScrollView) mRecentsContainer).getLinearLayoutChildCount();
+            ((RecentsVerticalScrollView) mRecentsContainer).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    dismiss();
+                }
+            }, (cleaned + 1) * 150);
         } else if (mRecentsContainer instanceof RecentsHorizontalScrollView) {
             count = ((RecentsHorizontalScrollView) mRecentsContainer).getLinearLayoutChildCount();
             for (int i = 0; i < count; i++) {
@@ -783,6 +798,15 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
                         .getLinearLayoutChildAt(i);
                  ViewHolder holder = (ViewHolder) child.getTag();
                 if (holder == null || !holder.taskDescription.isLocked()) {
+                    if (!scrolled) {
+                        scrolled = true;
+                        ((RecentsHorizontalScrollView) mRecentsContainer).post(new Runnable(){
+                            @Override
+                            public void run() {
+                                ((RecentsHorizontalScrollView) mRecentsContainer).smoothScrollTo(0, (int)child.getY());
+                            }});
+                    }
+                    cleaned ++;
                     ((RecentsHorizontalScrollView) mRecentsContainer).postDelayed(new Runnable() {
                         @Override
                         public void run() {
@@ -791,10 +815,12 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
                     }, i * 150);
                 }
             }
-            count = ((RecentsHorizontalScrollView) mRecentsContainer).getLinearLayoutChildCount();
-        }
-        if (count == 0) {
-            mShortcutBar.setVisibility(View.GONE);
+            ((RecentsHorizontalScrollView) mRecentsContainer).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    dismiss();
+                }
+            }, (cleaned + 1) * 150);
         }
     }
 
