@@ -25,7 +25,7 @@
 
 #ifdef DEBUG
 #include <android/log.h>
-#define TAG_JNI = "jnireg"
+#define TAG_JNI = "kylin-phoneloc"
 #endif
 
 

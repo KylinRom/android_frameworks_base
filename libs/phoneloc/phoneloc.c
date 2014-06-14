@@ -100,7 +100,7 @@ void formatPhone(char* phone, int len, char* nphone) { //得到电话号码的�
                     memmove(nphone + 5, "0", 1);
                     memmove(nphone + 5, nphone + 4, len);
                     memmove(nphone + 4, "0", 1);
-                } else if (nphone[3] != '5' && nphone[4] != '2' && nphone[4] != '3' && nphone[4] != '0' && nphone[4] != '1' && nphone[5] != '0') { //去除手机号和香港澳门处理
+                } else if (nphone[3] != '5' && nphone[4] != '2' && nphone[4] != '3' && nphone[3] != '8' && nphone[4] != '6' && nphone[4] != '0' && nphone[4] != '1' && nphone[5] != '0') { //去除手机号和香港澳门台湾处理
                     memmove(nphone +5, nphone + 4, len);
                     memmove(nphone + 4, "0", 1);
                 } else if (nphone[4] == '1' && nphone[5]=='0' && nphone[6] != '0') { //特指北京,三排除10086之类
@@ -146,7 +146,6 @@ getPhoneLocationJni( JNIEnv* env, jclass thiz, jstring phone ) {
     if (phone2 == NULL) return NULL;
     int len = strlen(phone2);
     if (len < 3) return NULL;
-
     char nphone[48];
     memset(nphone, 0x00, sizeof(nphone));
     formatPhone(phone2, len, nphone);
