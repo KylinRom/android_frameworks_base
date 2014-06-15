@@ -1619,9 +1619,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         }
 
         if (upgradeVersion == 99) {
-            if (mUserHandle == UserHandle.USER_OWNER) {
+            /*if (mUserHandle == UserHandle.USER_OWNER) {
                 loadScreenAnimationStyle(db);
-            }
+            }*/
             upgradeVersion = 100;
         }
 
@@ -2073,7 +2073,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         }
     }
 
-    private void loadScreenAnimationStyle(SQLiteDatabase db) {
+    /*private void loadScreenAnimationStyle(SQLiteDatabase db) {
         db.beginTransaction();
         SQLiteStatement stmt = null;
         try {
@@ -2086,7 +2086,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
             db.endTransaction();
             if (stmt != null) stmt.close();
         }
-    }
+    }*/
 
     private void loadRibbonSetting(SQLiteStatement stmt) {
         String tiles = mContext.getResources().getString(R.string.def_quick_settings_ribbon_tiles);
