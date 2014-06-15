@@ -84,7 +84,7 @@ public class QuickSettingsTile implements OnClickListener {
         if (tv != null) {
             tv.setVisibility(View.GONE);
         }
-        View image = getImageView();
+         View image = getImageView();
         if (image != null) {
             MarginLayoutParams params = (MarginLayoutParams) image.getLayoutParams();
             int margin = mContext.getResources().getDimensionPixelSize(
