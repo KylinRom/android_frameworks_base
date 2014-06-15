@@ -18,6 +18,5 @@
 
     <!-- ScreenShort Delete -->
     <string name="screenshot_delete">"刪除"</string>
-    <string name="screenshot_delete_confirmation">"屏幕截圖已刪除."</string>
 
 </resources>

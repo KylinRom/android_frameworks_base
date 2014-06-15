@@ -21,7 +21,6 @@
 
     <!-- ScreenShort Delete -->
     <string name="screenshot_delete">"删除"</string>
-    <string name="screenshot_delete_confirmation">"屏幕截图已删除."</string>
 
     <!-- Recents Ram Bar -->
     <string name="memory">RAM</string>
